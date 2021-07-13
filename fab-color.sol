@@ -2,31 +2,20 @@
 pragma solidity ^0.8.4;
 contract ColorAuction {
 
-    // bids
-    //    {...bids}
-    //     {address: ‘0x...’,
-    //        note: str
-    //        color: ‘d01ec6ff’,
-    //        bid_size: 24
-    //        }
-
-    // influence
-    //      Influence: 
-    // { address: 
-    //  influence_score: (0->1)
-    // }
-    event fabulousColorChanged(Color color);
-
     struct Color {
         bytes3 webhex;
         uint amount;
     }
-    
-    // The color that is currently "winning" with the highest cumulative bid value
-    Color public fabulousColor;
-    // uint public fabulousBid; // is now an attribute of fabColor
 
-    struct User{
+    Color public fabulousColor;
+    Color public drabColor;
+    
+    address public creator;
+    
+    event fabulousColorChanged(Color color);
+    event ColorChanged(Color color);  
+
+    struct User {
         bytes3 latestColorWebhex;        
         uint amount;
         uint influence;
@@ -35,21 +24,55 @@ contract ColorAuction {
     mapping(address => User) users;
     mapping(bytes3 => Color) colorScoreboard;
 
-    //Implementing the order object
+    //Implementing the linked list
     mapping(bytes3 => bytes3) betterColors; //here, each color points to the color better than it.
     mapping(bytes3 => bytes3) worseColors; //here, each color points to the color worse than it.
 
-    function getBetterColor(Color memory color) public {
+    function insertColor(Color memory color, Color memory worseColor, Color memory betterColor) public { 
+      //Inserts the color in the list above the worseColor and below the betterColor.
+
+      //first, remove the color from where it was and reform the links between its former worse and better colors
+      Color memory oldWorseColor = getWorseColor(color);
+      Color memory oldBetterColor = getBetterColor(color);
+
+      // Check to see if the thing you're moving used to be the fabulous color
+      if (color.webhex == fabulousColor.webhex) {
+        delete betterColors[oldWorseColor.webhex];
+        fabulousColor = oldWorseColor;
+      } else if (color.webhex == drabColor.webhex) {
+        delete worseColors[oldBetterColor.webhex];
+        drabColor = oldBetterColor;
+      } else {
+      betterColors[oldWorseColor.webhex] = oldBetterColor.webhex;
+      worseColors[oldBetterColor.webhex] = oldWorseColor.webhex;
+      }
+      //then, insert the color in the new location
+      betterColors[worseColor.webhex] = color.webhex;
+      betterColors[color.webhex] = betterColor.webhex;
+      
+      worseColors[betterColor.webhex] = color.webhex;
+      worseColors[color.webhex] = worseColor.webhex;
+      
+    }
+
+    function insertColorAtBottom(Color memory color) public {
+        betterColors[color.webhex] = drabColor.webhex;
+        worseColors[drabColor.webhex] = color.webhex;
+        drabColor = color;
+    }
+
+    function insertNewFabulousColor(Color memory color) public {
+        betterColors[fabulousColor.webhex] = color.webhex;
+        worseColors[color.webhex] = fabulousColor.webhex;
+        fabulousColor = color;
+    }
+
+    function getBetterColor(Color memory color) public view returns (Color memory) {
         return colorScoreboard[betterColors[color.webhex]];
     }
 
-    function getWorseColor(Color memory color) public {
+    function getWorseColor(Color memory color) public view returns (Color memory) {
         return colorScoreboard[worseColors[color.webhex]];
-    }
-
-    function insertColor(Color memory color, Color memory worseColor, Color memory betterColor) public { //insert the color between the worseColor and betterColor
-      // mutate the mapping to reorder the list
-      // if the better color was the fab color, this is now the fab color
     }
 
     // Recursively updates the color orders and determines if there is a new fabulousColor
@@ -70,7 +93,7 @@ contract ColorAuction {
         if (changedColor.amount < comparisonColor.amount) {
             // if the better colour's better colour is greater than the change color amount
             if (getBetterColor(comparisonColor).amount > changedColor.amount) {
-                insertColor(changedColor, getWorseColor(comparisonColor), comparisonColor);
+                //todo insertColor
                 return;
             }
             cascadeDown(changedColor, getWorseColor(comparisonColor));
@@ -83,7 +106,9 @@ contract ColorAuction {
         Color memory currentColor = colorScoreboard[webhex];
         //If the color doesn't exist, initialize it
         if (currentColor.webhex == 0) {
-            colorScoreboard[webhex] = Color(,,,); //TODO fix this
+            colorScoreboard[webhex] = Color(webhex,0);
+            //put it at the bottom of the color list 
+            insertColorAtBottom(colorScoreboard[webhex]);
         }
     
         // if the user did not already vote
@@ -94,13 +119,13 @@ contract ColorAuction {
                 users[msg.sender].amount += msg.value;
                 users[msg.sender].latestColorWebhex = webhex;
                 colorScoreboard[webhex].amount += msg.value;
-                cascade(webhex);
+                cascadeUp(colorScoreboard[webhex], getBetterColor(colorScoreboard[webhex]));
 
         // case 2: User already voted, update their vote and move any existing bid to their newly selected color (or add to existing color)
         } else {
             // remove the existing bid based on the user's existing color
             colorScoreboard[users[msg.sender].latestColorWebhex].amount -= users[msg.sender].amount;
-            cascade(users[msg.sender].latestColorWebhex);
+            cascadeDown(colorScoreboard[users[msg.sender].latestColorWebhex], getWorseColor(colorScoreboard[users[msg.sender].latestColorWebhex]));
 
             // update the user's color, add any amount from this message to their user.
             users[msg.sender].latestColorWebhex = webhex;
@@ -108,17 +133,19 @@ contract ColorAuction {
 
             //add to the colorScoreboard
             colorScoreboard[webhex].amount += users[msg.sender].amount;
-            cascade(webhex);
+            cascadeUp(colorScoreboard[webhex], getBetterColor(colorScoreboard[webhex]));
         }
-        // to test, set fabulousColor to the webhex
-        fabulousColor = Color(webhex, 0,0,100);
     }
 
-    // general helper functions (should be interfaces?)
+    // general helper functions
     /// Get the current Fabulous color webhex.
-    //function get_fab_color() public {
-    //    return fabulousColor;
-    //}
+    function get_fab_color() public view returns (Color memory) {
+        return fabulousColor;
+    }
+
+    // interface Fabcolor {
+    //     function get_fab_color() external;
+    // }
 
     /// Get the full scoreboard/list of colors with bids
     //function get_color_ranking(bytes3 webhex, uint check) public {
@@ -162,9 +189,17 @@ contract ColorAuction {
     /// Create a simple auction with `_biddingTime`
     /// seconds bidding time on behalf of the
     /// beneficiary address `_beneficiary`.
-    constructor(
-        
-    ) {
+    constructor (bytes3 _fabColorHex,
+                uint _fabColorStartAmount,
+                bytes3 _drabColorHex,
+                uint _drabColorAmount
+            ) {
+                fabulousColor = Color(_fabColorHex, _fabColorStartAmount);
+                drabColor = Color(_drabColorHex, _drabColorAmount);
+                betterColors[_drabColorHex] = _fabColorHex;
+                worseColors[_fabColorHex] = _drabColorHex;
+                creator = msg.sender;
 
+        //set mappings (fab's worse color drab colour and visa versa)
     }
 }
